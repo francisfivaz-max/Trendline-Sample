@@ -17,6 +17,9 @@ def get_url(section, key):
 EXCEL_URL  = get_url("urls", "excel")
 PARAMS_URL = get_url("urls", "parameters")
 
+SAFE_COLORWAY = ["#1f77b4", "#2ca02c", "#17becf", "#9467bd", "#7f7f7f",
+                 "#8c564b", "#bcbd22", "#aec7e8", "#98df8a", "#9edae5"]
+
 @st.cache_data
 def load_params_from_url(url: str):
     r = requests.get(url, timeout=30); r.raise_for_status()
@@ -55,13 +58,11 @@ def coerce_numeric(val):
     try: return float(m.group(0)) if m else np.nan
     except: return np.nan
 
-# ---------- UI ----------
+# ---------- UI (minimal, no captions) ----------
 st.title("Water Quality Trends — Monthly Trends (Read-only)")
-st.caption("Data and parameter targets load from Streamlit **secrets** (GitHub RAW URLs). Uploads & URL inputs are disabled.")
 
 with st.sidebar:
     st.header("Data")
-    st.text("URLs are stored in secrets.")
     refresh = st.button("Refresh data")
 
 params = load_params_from_url(PARAMS_URL)
@@ -75,7 +76,7 @@ if "raw_data" not in st.session_state or refresh:
 
 df = st.session_state["raw_data"].copy()
 
-# --- Make column labels unique to avoid duplicate-name traps (Date, Date.1, ...) ---
+# --- Make column labels unique (Date, Date.1, ...) ---
 def make_unique(cols):
     seen = {}
     out = []
@@ -97,7 +98,6 @@ for c in df.columns:
     elif lc in {"site","siteid"} and ("Site ID" not in standard.values()): standard[c] = "Site ID"
     elif "param" in lc and ("Parameter" not in standard.values()): standard[c] = "Parameter"
     elif (lc in {"result","results","result value","value","reading"} or "result" in lc) and ("Result" not in standard.values()): standard[c] = "Result"
-# (Intentionally do not rename Date here)
 df = df.rename(columns=standard)
 
 required_base = {"Type","Site ID","Parameter","Result"}
@@ -135,29 +135,17 @@ with left:
                        value=(min_m.to_pydatetime(), max_m.to_pydatetime()), format="YYYY/MM")
     param_options = sorted(df["Parameter"].dropna().unique().tolist())
     sel_param = st.selectbox("Parameter", param_options)
-    show_audit = st.checkbox("Show monthly audit table for a single site", value=False)
-    if show_audit:
-        sites_for_type = sorted(df.loc[df["Type"] == sel_type, "Site ID"].dropna().unique().tolist())
-        audit_site = st.selectbox("Audit site", sites_for_type)
 
-# ---- Filter for selected view ----
+# ---- Filter & aggregate ----
 mask = (df["Type"] == sel_type) & (df["Month"] >= pd.Timestamp(mrange[0])) & (df["Month"] <= pd.Timestamp(mrange[1])) & (df["Parameter"] == sel_param)
 sub = df.loc[mask].copy()
-
-# Keep only rows with a valid Date for idxmax
 sub_valid = sub.dropna(subset=["Date"]).copy()
 
-# Correct "last test per month": pick the row whose Date is the max per month per site
 if len(sub_valid):
     last_idx = sub_valid.groupby(["Site ID","Month"])["Date"].idxmax()
     last_rows = sub_valid.loc[last_idx].sort_values(["Site ID","Month","Date"])
 else:
     last_rows = sub_valid
-
-# Optional per-site audit
-if show_audit and len(sub_valid):
-    audit = sub_valid.loc[sub_valid["Site ID"] == audit_site, ["Site ID","Date","Month","Result","ResultNum"]].sort_values(["Site ID","Date"])
-    st.dataframe(audit, use_container_width=True, height=260)
 
 # ---- Pivot for chart ----
 pivot = last_rows.pivot_table(index="Month", columns="Site ID", values="ResultNum", aggfunc="last").sort_index()
@@ -169,6 +157,7 @@ target = row["MaxTarget"].iloc[0] if len(row) else np.nan
 with right:
     st.subheader(f"{sel_param} — {sel_type}")
     fig = go.Figure()
+    fig.update_layout(colorway=SAFE_COLORWAY)
     for col in pivot.columns:
         fig.add_trace(go.Scatter(x=pivot.index, y=pivot[col], mode="lines+markers", name=str(col)))
     if pd.notna(target):
@@ -177,5 +166,3 @@ with right:
                       legend=dict(orientation="v", y=0.5, x=1.02),
                       xaxis_title="Month (last test per month)", yaxis_title=str(sel_param))
     st.plotly_chart(fig, use_container_width=True)
-
-    st.caption("Monthly trend (last test per month). Target line shows the max target and remains visible even when no data is present.")

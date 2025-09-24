@@ -5,7 +5,7 @@ import numpy as np
 import io, re, requests
 import plotly.graph_objects as go
 
-st.set_page_config(page_title="Water Quality Trends — Monthly", layout="wide")
+st.set_page_config(page_title="Water Quality Trends — Monthly", layout="wide", initial_sidebar_state="expanded")
 
 def get_url(section, key):
     try:
@@ -58,7 +58,7 @@ def coerce_numeric(val):
     try: return float(m.group(0)) if m else np.nan
     except: return np.nan
 
-# ---------- UI (minimal, no captions) ----------
+# ---------- UI (minimal) ----------
 st.title("Water Quality Trends — Monthly Trends (Read-only)")
 
 with st.sidebar:
@@ -125,19 +125,32 @@ if df["Month"].isna().all():
 df["ResultNum"] = df["Result"].apply(coerce_numeric)
 df = df.dropna(subset=["Month"])
 
-# ---- Filters ----
-left, right = st.columns([1,4], gap="large")
-with left:
-    type_options = sorted([x for x in df["Type"].dropna().unique() if str(x).strip() != ""])
-    sel_type = st.selectbox("Type", type_options)
-    min_m, max_m = df["Month"].min(), df["Month"].max()
-    mrange = st.slider("Month range", min_value=min_m.to_pydatetime(), max_value=max_m.to_pydatetime(),
-                       value=(min_m.to_pydatetime(), max_m.to_pydatetime()), format="YYYY/MM")
-    param_options = sorted(df["Parameter"].dropna().unique().tolist())
-    sel_param = st.selectbox("Parameter", param_options)
+# ---- Sidebar filters under Refresh (in collapsible expander) ----
+with st.sidebar:
+    with st.expander("Filters", expanded=True):
+        type_options = sorted([x for x in df["Type"].dropna().unique() if str(x).strip() != ""])
+        sel_type = st.selectbox("Type", type_options)
+
+        # Calendar-style date range
+        min_date, max_date = df["Date"].min().date(), df["Date"].max().date()
+        date_range = st.date_input("Date range", value=(min_date, max_date), min_value=min_date, max_value=max_date)
+
+        # Allow both tuple and single-date cases gracefully
+        if isinstance(date_range, tuple) and len(date_range) == 2:
+            start_date, end_date = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+        else:
+            start_date = pd.to_datetime(date_range)
+            end_date = pd.to_datetime(date_range)
+
+        param_options = sorted(df["Parameter"].dropna().unique().tolist())
+        sel_param = st.selectbox("Parameter", param_options)
 
 # ---- Filter & aggregate ----
-mask = (df["Type"] == sel_type) & (df["Month"] >= pd.Timestamp(mrange[0])) & (df["Month"] <= pd.Timestamp(mrange[1])) & (df["Parameter"] == sel_param)
+mask = (
+    (df["Type"] == sel_type) &
+    (df["Date"] >= start_date) & (df["Date"] <= end_date) &
+    (df["Parameter"] == sel_param)
+)
 sub = df.loc[mask].copy()
 sub_valid = sub.dropna(subset=["Date"]).copy()
 
@@ -151,18 +164,18 @@ else:
 pivot = last_rows.pivot_table(index="Month", columns="Site ID", values="ResultNum", aggfunc="last").sort_index()
 
 # ---- Target line ----
+params = load_params_from_url(PARAMS_URL)
 row = params.loc[params["Parameter"].str.strip().str.lower() == str(sel_param).strip().lower()]
 target = row["MaxTarget"].iloc[0] if len(row) else np.nan
 
-with right:
-    st.subheader(f"{sel_param} — {sel_type}")
-    fig = go.Figure()
-    fig.update_layout(colorway=SAFE_COLORWAY)
-    for col in pivot.columns:
-        fig.add_trace(go.Scatter(x=pivot.index, y=pivot[col], mode="lines+markers", name=str(col)))
-    if pd.notna(target):
-        fig.add_hline(y=float(target), line_color="red", line_width=2, annotation_text=f"Target {target}", annotation_position="top left")
-    fig.update_layout(height=520, margin=dict(l=40,r=10,t=10,b=40),
-                      legend=dict(orientation="v", y=0.5, x=1.02),
-                      xaxis_title="Month (last test per month)", yaxis_title=str(sel_param))
-    st.plotly_chart(fig, use_container_width=True)
+# ---- Chart (full-width, series non-red, red target line) ----
+fig = go.Figure()
+fig.update_layout(colorway=SAFE_COLORWAY)
+for col in pivot.columns:
+    fig.add_trace(go.Scatter(x=pivot.index, y=pivot[col], mode="lines+markers", name=str(col)))
+if pd.notna(target):
+    fig.add_hline(y=float(target), line_color="red", line_width=2, annotation_text=f"Target {target}", annotation_position="top left")
+fig.update_layout(height=560, margin=dict(l=40,r=10,t=10,b=40),
+                  legend=dict(orientation="v", y=0.5, x=1.02),
+                  xaxis_title="Month (last test per month)", yaxis_title=str(sel_param))
+st.plotly_chart(fig, use_container_width=True)

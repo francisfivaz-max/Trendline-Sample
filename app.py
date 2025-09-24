@@ -73,19 +73,33 @@ if "raw_data" not in st.session_state or refresh:
         st.stop()
 
 df = st.session_state["raw_data"].copy()
-df.columns = df.columns.map(str).str.strip()
 
-# ---- Standardize headers ----
-colmap = {}
+# --- Ensure unique column labels to avoid pandas duplicate-label pitfalls ---
+def make_unique(cols):
+    seen = {}
+    out = []
+    for c in cols:
+        key = str(c)
+        if key not in seen:
+            seen[key] = 0
+            out.append(key)
+        else:
+            seen[key] += 1
+            out.append(f"{key}.{seen[key]}")  # e.g., 'Date.1', 'Date.2'
+    return out
+df.columns = make_unique(df.columns)
+
+# ---- Standardize headers (only for the *first* occurrence) ----
+standard = {}
 for c in df.columns:
-    lc = str(c).strip().lower()
-    if lc == "type": colmap[c] = "Type"
-    elif "site" in lc and "id" in lc: colmap[c] = "Site ID"
-    elif lc in {"site","siteid"}: colmap[c] = "Site ID"
-    elif "param" in lc: colmap[c] = "Parameter"
-    elif lc in {"result","results","result value","value","reading"} or "result" in lc: colmap[c] = "Result"
-    elif "date" in lc or "sample" in lc: colmap[c] = "Date"
-df = df.rename(columns=colmap)
+    lc = c.lower().strip()
+    if "type" == lc and "Type" not in standard.values(): standard[c] = "Type"
+    elif ("site" in lc and "id" in lc) and ("Site ID" not in standard.values()): standard[c] = "Site ID"
+    elif lc in {"site","siteid"} and ("Site ID" not in standard.values()): standard[c] = "Site ID"
+    elif "param" in lc and ("Parameter" not in standard.values()): standard[c] = "Parameter"
+    elif (lc in {"result","results","result value","value","reading"} or "result" in lc) and ("Result" not in standard.values()): standard[c] = "Result"
+# Do NOT map Date here to avoid triggering duplicate-label behavior
+df = df.rename(columns=standard)
 
 required_base = {"Type","Site ID","Parameter","Result"}
 missing_base = required_base - set(df.columns)
@@ -93,27 +107,24 @@ if missing_base:
     st.error(f"Missing required columns: {sorted(missing_base)}")
     st.stop()
 
-# ---- Build a Date column robustly, even with duplicate-named columns ----
+# ---- Build Date purely by *index* from all date-like columns (original + duplicates) ----
 date_like_idx = [i for i, c in enumerate(df.columns) if ("date" in c.lower()) or ("sample" in c.lower())]
 if not date_like_idx:
     st.error("Could not find any date-like column. Please ensure your data has a Date column.")
     st.stop()
-# Parse by index and coalesce
+
 parsed = [pd.to_datetime(df.iloc[:, i], errors="coerce") for i in date_like_idx]
 date_block = pd.concat(parsed, axis=1)
 df["Date"] = date_block.bfill(axis=1).iloc[:, 0]
 
-# Final coercion & sanity check
-df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-if df["Date"].isna().all():
-    st.error("All Date values are NaT after parsing. Please check your date columns.")
+# Vectorized month floor
+df["Month"] = df["Date"].dt.to_period("M").dt.to_timestamp()
+if df["Month"].isna().all():
+    st.error("All Month values are NaT. Please verify your date columns contain valid dates.")
     st.stop()
 
 # ---- Clean + enrich ----
 df["ResultNum"] = df["Result"].apply(coerce_numeric)
-
-# Vectorized month floor (avoid apply)
-df["Month"] = df["Date"].dt.to_period("M").dt.to_timestamp()
 df = df.dropna(subset=["Month"])
 
 # ---- Filters ----
@@ -129,7 +140,7 @@ with left:
 
 # ---- Filter & aggregate ----
 mask = (df["Type"] == sel_type) & (df["Month"] >= pd.Timestamp(mrange[0])) & (df["Month"] <= pd.Timestamp(mrange[1])) & (df["Parameter"] == sel_param)
-sub = df.loc[mask].copy().sort_values(["Site ID","Month","Date"])
+sub = df.loc[mask].copy().sort_values(["Site ID","Month"] + (["Date"] if "Date" in df.columns else []))
 idx = sub.groupby(["Site ID","Month"])["Date"].transform("idxmax")
 try:
     last_rows = sub.loc[idx.dropna().astype(int)]

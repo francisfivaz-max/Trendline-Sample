@@ -1,5 +1,6 @@
 
-# Water Quality Trends — Monthly (Secrets-only, v4)
+# Water Quality Trends — Monthly (Secrets-only, v5)
 
-- Vectorized Month derivation (no apply).
-- Parses all date-like columns by index; coalesces to single Date.
+- Never calls `to_datetime(df["Date"])` directly.
+- Makes column labels unique (Date, Date.1, Date.2, ...), then builds Date by index.
+- Vectorized Month derivation; permanent red target line.

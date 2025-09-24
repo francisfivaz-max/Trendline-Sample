@@ -1,6 +1,6 @@
 
-# Water Quality Trends — Monthly (Secrets-only, v5)
+# Water Quality Trends — Monthly (Secrets-only, v6)
 
-- Never calls `to_datetime(df["Date"])` directly.
-- Makes column labels unique (Date, Date.1, Date.2, ...), then builds Date by index.
-- Vectorized Month derivation; permanent red target line.
+- Reads RAW URLs from Streamlit **secrets**.
+- Selects **last test per month per site** using `groupby().idxmax()`.
+- Includes an optional per-site **audit table** to verify values.

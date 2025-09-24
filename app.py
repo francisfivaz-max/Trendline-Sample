@@ -55,6 +55,7 @@ def coerce_numeric(val):
     try: return float(m.group(0)) if m else np.nan
     except: return np.nan
 
+# ---------- UI ----------
 st.title("Water Quality Trends — Monthly Trends (Read-only)")
 st.caption("Data and parameter targets load from Streamlit **secrets** (GitHub RAW URLs). Uploads & URL inputs are disabled.")
 
@@ -74,31 +75,29 @@ if "raw_data" not in st.session_state or refresh:
 
 df = st.session_state["raw_data"].copy()
 
-# --- Ensure unique column labels to avoid pandas duplicate-label pitfalls ---
+# --- Make column labels unique to avoid duplicate-name traps (Date, Date.1, ...) ---
 def make_unique(cols):
     seen = {}
     out = []
     for c in cols:
         key = str(c)
         if key not in seen:
-            seen[key] = 0
-            out.append(key)
+            seen[key] = 0; out.append(key)
         else:
-            seen[key] += 1
-            out.append(f"{key}.{seen[key]}")  # e.g., 'Date.1', 'Date.2'
+            seen[key] += 1; out.append(f"{key}.{seen[key]}")
     return out
 df.columns = make_unique(df.columns)
 
-# ---- Standardize headers (only for the *first* occurrence) ----
+# ---- Standardize headers (first occurrence only) ----
 standard = {}
 for c in df.columns:
     lc = c.lower().strip()
-    if "type" == lc and "Type" not in standard.values(): standard[c] = "Type"
+    if lc == "type" and "Type" not in standard.values(): standard[c] = "Type"
     elif ("site" in lc and "id" in lc) and ("Site ID" not in standard.values()): standard[c] = "Site ID"
     elif lc in {"site","siteid"} and ("Site ID" not in standard.values()): standard[c] = "Site ID"
     elif "param" in lc and ("Parameter" not in standard.values()): standard[c] = "Parameter"
     elif (lc in {"result","results","result value","value","reading"} or "result" in lc) and ("Result" not in standard.values()): standard[c] = "Result"
-# Do NOT map Date here to avoid triggering duplicate-label behavior
+# (Intentionally do not rename Date here)
 df = df.rename(columns=standard)
 
 required_base = {"Type","Site ID","Parameter","Result"}
@@ -107,12 +106,11 @@ if missing_base:
     st.error(f"Missing required columns: {sorted(missing_base)}")
     st.stop()
 
-# ---- Build Date purely by *index* from all date-like columns (original + duplicates) ----
+# ---- Build Date purely by index from all date-like columns ----
 date_like_idx = [i for i, c in enumerate(df.columns) if ("date" in c.lower()) or ("sample" in c.lower())]
 if not date_like_idx:
     st.error("Could not find any date-like column. Please ensure your data has a Date column.")
     st.stop()
-
 parsed = [pd.to_datetime(df.iloc[:, i], errors="coerce") for i in date_like_idx]
 date_block = pd.concat(parsed, axis=1)
 df["Date"] = date_block.bfill(axis=1).iloc[:, 0]
@@ -137,16 +135,31 @@ with left:
                        value=(min_m.to_pydatetime(), max_m.to_pydatetime()), format="YYYY/MM")
     param_options = sorted(df["Parameter"].dropna().unique().tolist())
     sel_param = st.selectbox("Parameter", param_options)
+    show_audit = st.checkbox("Show monthly audit table for a single site", value=False)
+    if show_audit:
+        sites_for_type = sorted(df.loc[df["Type"] == sel_type, "Site ID"].dropna().unique().tolist())
+        audit_site = st.selectbox("Audit site", sites_for_type)
 
-# ---- Filter & aggregate ----
+# ---- Filter for selected view ----
 mask = (df["Type"] == sel_type) & (df["Month"] >= pd.Timestamp(mrange[0])) & (df["Month"] <= pd.Timestamp(mrange[1])) & (df["Parameter"] == sel_param)
-sub = df.loc[mask].copy().sort_values(["Site ID","Month"] + (["Date"] if "Date" in df.columns else []))
-idx = sub.groupby(["Site ID","Month"])["Date"].transform("idxmax")
-try:
-    last_rows = sub.loc[idx.dropna().astype(int)]
-except Exception:
-    last_rows = sub
+sub = df.loc[mask].copy()
 
+# Keep only rows with a valid Date for idxmax
+sub_valid = sub.dropna(subset=["Date"]).copy()
+
+# Correct "last test per month": pick the row whose Date is the max per month per site
+if len(sub_valid):
+    last_idx = sub_valid.groupby(["Site ID","Month"])["Date"].idxmax()
+    last_rows = sub_valid.loc[last_idx].sort_values(["Site ID","Month","Date"])
+else:
+    last_rows = sub_valid
+
+# Optional per-site audit
+if show_audit and len(sub_valid):
+    audit = sub_valid.loc[sub_valid["Site ID"] == audit_site, ["Site ID","Date","Month","Result","ResultNum"]].sort_values(["Site ID","Date"])
+    st.dataframe(audit, use_container_width=True, height=260)
+
+# ---- Pivot for chart ----
 pivot = last_rows.pivot_table(index="Month", columns="Site ID", values="ResultNum", aggfunc="last").sort_index()
 
 # ---- Target line ----
